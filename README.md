@@ -11,11 +11,11 @@
 2. Start the app
 
    ```bash
-   npm run ios
+   npx expo run:ios
    ```
 
    OR
 
    ```bash
-   npm run android
+   npx expo run:android
    ```
