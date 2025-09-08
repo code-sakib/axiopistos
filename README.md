@@ -1,6 +1,6 @@
 
 
-## Get started with Axiopistos(which means reliable and trustworthy is greek).
+## Get started with Axiopistos
 
 1. Install dependencies
 
