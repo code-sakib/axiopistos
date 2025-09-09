@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
 import {
   Image,
   ScrollView,
@@ -13,6 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 export default function DetailsScreen() {
   const { product: productString } = useLocalSearchParams();
   const router = useRouter();
+  const [added, setAdded] = useState(false); // track add-to-cart state
 
   if (!productString) {
     return <Text>No product data available.</Text>;
@@ -20,13 +22,11 @@ export default function DetailsScreen() {
 
   const product = JSON.parse(productString as string);
 
-  // pick a single verification source (owner can't be verified by multiple sources for same product)
   const verificationSource =
     Array.isArray(product.verificationBadges) && product.verificationBadges.length > 0
       ? product.verificationBadges[0]
       : null;
 
-  // helper to render initials for avatar
   const getInitials = (name?: string) => {
     if (!name) return "U";
     const parts = name.trim().split(/\s+/);
@@ -38,7 +38,7 @@ export default function DetailsScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
       <View style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.container}>
-          {/* Back Button layered above content */}
+          {/* Back Button */}
           <TouchableOpacity
             onPress={() => router.back()}
             style={styles.backButton}
@@ -50,23 +50,18 @@ export default function DetailsScreen() {
           <Text style={styles.name}>{product.name}</Text>
           <Text style={styles.price}>${product.price}</Text>
           <Text style={styles.condition}>Condition: {product.condition}</Text>
-          {product.sizes && (
-            <Text style={styles.sizes}>Sizes: {product.sizes.join(", ")}</Text>
-          )}
 
-          {/* Owner + verification row (collaborated) */}
+          {/* Owner + verification */}
           <View style={styles.ownerRow}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>{getInitials(product.owner)}</Text>
             </View>
-
             <View style={styles.ownerInfo}>
               <Text style={styles.ownerName} numberOfLines={1} ellipsizeMode="tail">
                 {product.owner}
               </Text>
               <Text style={styles.ownerSubText}>Seller</Text>
             </View>
-
             {verificationSource ? (
               <View style={styles.ownerVerifiedBadge}>
                 <Text style={styles.ownerVerifiedText}>
@@ -80,10 +75,21 @@ export default function DetailsScreen() {
             )}
           </View>
 
+          {/* Add to Cart Button */}
+          <TouchableOpacity
+            style={[styles.cartButton, added && styles.cartButtonAdded]}
+            onPress={() => setAdded(true)}
+            disabled={added}
+          >
+            <Text style={[styles.cartButtonText, added && styles.cartButtonTextAdded]}>
+              {added ? "Added Successfully" : "Add to Cart"}
+            </Text>
+          </TouchableOpacity>
+
           {/* Product details */}
           <Text style={styles.sectionTitle}>Product Details</Text>
           <Text style={styles.description}>
-            {product.description ??
+            {product.detail ??
               "Premium quality product with detailed specification. This will show the product description from the backend if available."}
           </Text>
 
@@ -93,6 +99,7 @@ export default function DetailsScreen() {
             Standard delivery: 4–6 business days.{"\n"}
             Express delivery: 2–3 business days.
           </Text>
+
         </ScrollView>
       </View>
     </SafeAreaView>
@@ -107,7 +114,7 @@ const styles = StyleSheet.create({
   },
   backButton: {
     position: "absolute",
-    top: 50, // adjust for notch / safe area
+    top: 50,
     left: 20,
     zIndex: 10,
     padding: 8,
@@ -139,8 +146,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 12,
   },
-
-  /* Owner + verification combined row */
   ownerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -198,7 +203,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-
   sectionTitle: {
     fontSize: 18,
     fontWeight: "600",
@@ -209,5 +213,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#555",
     lineHeight: 24,
+  },
+  cartButton: {
+    marginTop: 20,
+    backgroundColor: "#3b49b8",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  cartButtonAdded: {
+    backgroundColor: "#1b7a3a",
+  },
+  cartButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  cartButtonTextAdded: {
+    color: "#fff",
   },
 });

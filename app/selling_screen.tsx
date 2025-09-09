@@ -1,9 +1,11 @@
 // screens/SellingScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -30,6 +32,10 @@ export default function SellingScreen() {
   const [orderId, setOrderId] = useState("");
   const [orderDetails, setOrderDetails] = useState("");
   const [verified, setVerified] = useState(false);
+
+  // image state
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
 
   // custom dropdown state
   const [selectedSource, setSelectedSource] = useState<string>("rareT");
@@ -62,8 +68,8 @@ export default function SellingScreen() {
     if (!d) return "";
     const trimmed = d.trim();
     if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10);
-    if (/^\d{2}[\/-]\d{2}[\/-]\d{4}$/.test(trimmed)) {
-      const parts = trimmed.split(/[\/-]/);
+    if (/^\d{2}[\/ -]\d{2}[\/ -]\d{4}$/.test(trimmed)) {
+      const parts = trimmed.split(/[\/ -]/);
       return `${parts[2]}-${parts[1].padStart(2, "0")}-${parts[0].padStart(2, "0")}`;
     }
     return trimmed;
@@ -159,6 +165,39 @@ export default function SellingScreen() {
   const selectedLabel =
     DROPDOWN_ITEMS.find((i) => i.key === selectedSource)?.label ?? "Select source";
 
+  // Image picker helper
+  const pickImage = async () => {
+    try {
+      // Request permission (only needed on native platforms)
+      if (Platform.OS !== "web") {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== "granted") {
+          Alert.alert("Permission required", "Permission to access media library is required!");
+          return;
+        }
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: 'images',       // or ['images']
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.7,
+      });
+
+      if (!result.canceled) {
+        // expo-image-picker v13+ returns { assets: [{ uri }] } on some versions; handle both
+        // @ts-ignore
+        const uri = result.assets ? result.assets[0].uri : (result as any).uri;
+        setImageUri(uri);
+      }
+    } catch (err) {
+      console.error("Image pick error:", err);
+      Alert.alert("Error", "Could not pick the image. Try again.");
+    }
+  };
+
+  const removeImage = () => setImageUri(null);
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#f5f5f5" }}>
       {/* Back Button */}
@@ -178,6 +217,31 @@ export default function SellingScreen() {
           {/* Product Info */}
           <View style={styles.card}>
             <Text style={styles.title}>Sell a Product</Text>
+
+            {/* Image upload area (new) */}
+            <View style={styles.imageUploadContainer}>
+              <Text style={styles.imageLabel}>Product image (optional)</Text>
+
+              <TouchableOpacity
+                style={styles.imageBox}
+                onPress={pickImage}
+                activeOpacity={0.8}
+              >
+                {imageUri ? (
+                  <View style={{ width: "100%" }}>
+                    <Image source={{ uri: imageUri }} style={styles.previewImage} />
+                    <TouchableOpacity style={styles.removeImageBtn} onPress={removeImage}>
+                      <Text style={styles.removeImageText}>Remove</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.imagePlaceholderRow}>
+                    <Ionicons name="camera" size={20} color="#666" />
+                    <Text style={styles.imagePlaceholderText}>Tap to upload image</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
 
             <TextInput style={styles.input} placeholder="Product Name" value={productName} onChangeText={setProductName} />
 
@@ -357,6 +421,53 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   primaryButtonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
+
+  /* image upload styles */
+  imageUploadContainer: {
+    marginBottom: 12,
+  },
+  imageLabel: {
+    fontSize: 13,
+    color: "#444",
+    marginBottom: 8,
+    fontWeight: "600",
+  },
+  imageBox: {
+    borderWidth: 1,
+    borderColor: "#e3e3e3",
+    borderStyle: "dashed",
+    borderRadius: 10,
+    padding: 12,
+    minHeight: 90,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#fafafa",
+  },
+  imagePlaceholderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  imagePlaceholderText: {
+    marginLeft: 8,
+    color: "#666",
+  },
+  previewImage: {
+    width: "100%",
+    height: 180,
+    borderRadius: 8,
+    resizeMode: "cover",
+  },
+  removeImageBtn: {
+    marginTop: 8,
+    alignSelf: "flex-end",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  removeImageText: {
+    color: "#e74c3c",
+    fontWeight: "600",
+  },
 });
 
 /* Modal styles */

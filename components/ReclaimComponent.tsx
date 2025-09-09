@@ -276,12 +276,7 @@ export default function ReclaimComponent({ requiredFields, onVerificationResult 
 
       // Optional: query the RUM contract if you still want the on-chain followers value
       await queryRUMContract();
-
-      // If count is zero -> alert user
-      if (extractedCount === 0) {
-        Alert.alert("No orders", "Order count is zero — you have no orders to verify.");
-      }
-
+      
       // Deliver normalized result back to parent
       if (typeof onVerificationResult === "function") {
         // normalize orders to array if possible
