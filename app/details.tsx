@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import React, { useState } from "react";
 import {
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -11,10 +12,48 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+// Reclaim / Abstraxion hooks to get logged-in account
+import { useAbstraxionAccount } from "@burnt-labs/abstraxion-react-native";
+
+// Firebase
+import { getApps, initializeApp } from "firebase/app";
+import {
+  doc,
+  getDoc,
+  getFirestore,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+
+// ---------- Firebase init (duplicate-safe) ----------
+const firebaseConfig = {
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? "",
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "",
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? "",
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "",
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "",
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? "",
+};
+
+let firebaseApp;
+if (!getApps().length) {
+  firebaseApp = initializeApp(firebaseConfig);
+} else {
+  firebaseApp = getApps()[0];
+}
+const db = getFirestore(firebaseApp);
+// ----------------------------------------------------
+
 export default function DetailsScreen() {
   const { product: productString } = useLocalSearchParams();
   const router = useRouter();
   const [added, setAdded] = useState(false); // track add-to-cart state
+
+  // account
+  const accountApi = useAbstraxionAccount() as any;
+  const { data: account, isConnected } = accountApi ?? {};
+  const xionId = account?.bech32Address ?? account?.address ?? account?.id ?? null;
 
   if (!productString) {
     return <Text>No product data available.</Text>;
@@ -34,15 +73,66 @@ export default function DetailsScreen() {
     return (parts[0].slice(0, 1) + parts[1].slice(0, 1)).toUpperCase();
   };
 
+  // derive stable productId for dedupe
+  const productId =
+    product.id ?? product._id ?? product.productId ?? `${product.name}-${product.price}`;
+
+  const addToCart = async () => {
+    if (!isConnected || !xionId) {
+      Alert.alert("Login required", "Please login from your profile to add items to cart.");
+      return;
+    }
+
+    try {
+      // read user doc
+      const userRef = doc(db, "users", xionId);
+      const snap = await getDoc(userRef);
+
+      let cart: any[] = [];
+      if (snap.exists()) {
+        const data = snap.data();
+        cart = Array.isArray(data?.cart) ? data.cart : [];
+      } else {
+        // if user doc doesn't exist create minimal doc
+        await setDoc(userRef, { createdAt: serverTimestamp(), cart: [] }, { merge: true });
+        cart = [];
+      }
+
+      // prevent duplicates by productId
+      const exists = cart.some((it: any) => it.productId === productId);
+      if (exists) {
+        setAdded(true);
+        Alert.alert("Already in cart", "This product is already in your cart.");
+        return;
+      }
+
+      const itemToAdd = {
+        productId,
+        name: product.name,
+        price: product.price,
+        image: product.image,
+        condition: product.condition,
+        owner: product.owner,
+        addedAt: Date.now(),
+      };
+
+      cart.push(itemToAdd);
+
+      await updateDoc(userRef, { cart });
+
+      setAdded(true);
+    } catch (err: any) {
+      console.error("Add to cart error:", err);
+      Alert.alert("Error", "Could not add to cart: " + (err?.message ?? err));
+    }
+  };
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
       <View style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.container}>
           {/* Back Button */}
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.backButton}
-          >
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
 
@@ -78,7 +168,7 @@ export default function DetailsScreen() {
           {/* Add to Cart Button */}
           <TouchableOpacity
             style={[styles.cartButton, added && styles.cartButtonAdded]}
-            onPress={() => setAdded(true)}
+            onPress={addToCart}
             disabled={added}
           >
             <Text style={[styles.cartButtonText, added && styles.cartButtonTextAdded]}>
@@ -99,13 +189,13 @@ export default function DetailsScreen() {
             Standard delivery: 4–6 business days.{"\n"}
             Express delivery: 2–3 business days.
           </Text>
-
         </ScrollView>
       </View>
     </SafeAreaView>
   );
 }
 
+// reuse your existing styles (same as you provided)
 const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
