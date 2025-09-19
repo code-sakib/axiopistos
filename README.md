@@ -1,4 +1,4 @@
-# Axiopistos 🏆
+# Axiopistos
 
 **Luxury Collectibles Authentication Platform powered by zkTLS**
 
