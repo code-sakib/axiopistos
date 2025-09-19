@@ -3,7 +3,7 @@ import {
   useAbstraxionSigningClient,
 } from "@burnt-labs/abstraxion-react-native";
 import { ReclaimVerification } from "@reclaimprotocol/inapp-rn-sdk";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 const reclaimVerification = new ReclaimVerification();
@@ -24,47 +24,63 @@ type Status =
   | "complete"
   | "error";
 
-export default function ReclaimComponent() {
-  const { client } = useAbstraxionSigningClient();
-  const {
-    data: account,
-    isConnected,
-    login,
-    isConnecting,
-  } = useAbstraxionAccount();
+type Props = {
+  // requiredFields are provided by parent (SellingScreen)
+  requiredFields?: {
+    productName?: string;
+    datePurchased?: string;
+    orderId?: string;
+    orderDetails?: string;
+  };
+  // callback after verification finishes (success or failure) - returns parsed proof & extracted
+  onVerificationResult?: (result: {
+    proof?: any;
+    extractedCount?: number | undefined;
+    extractedOrders?: any[] | string | undefined;
+    rawContext?: any;
+  }) => void;
+};
 
-  const [queryResult, setQueryResult] = useState<string | undefined>(undefined);
+export default function ReclaimComponent({ requiredFields, onVerificationResult }: Props) {
+  const { client } = useAbstraxionSigningClient();
+  const accountApi = useAbstraxionAccount();
+  const { data: account, isConnected, login, isConnecting } = accountApi;
+
+  // --- new states ---
+  const [followers, setFollowers] = useState<number | undefined>(undefined); // from contract query (if used)
+  const [count, setCount] = useState<number | undefined>(undefined); // extracted from proof context
+  const [orders, setOrders] = useState<any[] | string | undefined>(undefined); // extracted orders (array or raw)
+  // ------------------
+
   const [status, setStatus] = useState<Status>("idle");
   const [loading, setLoading] = useState(false);
 
+  // query optional RUM contract (same as earlier)
   const queryRUMContract = async () => {
     if (!client) {
       console.log("Client not available for query");
       return;
     }
-    console.log("Account address:", account.bech32Address.toString());
 
     try {
       const queryMsg = {
         get_value_by_user: {
           address: account?.bech32Address,
         },
-        
       };
-
-      console.log("Querying RUM contract with message:", queryMsg);
 
       const result: string = await client.queryContractSmart(
         RUM_CONTRACT_ADDRESS,
         queryMsg
       );
 
-      // Parse the string result to number, handling quoted strings
-      const cleanResult = result.replace(/"/g, "");
-      setQueryResult(cleanResult);
+      // Parse the string result to number (contract returns a quoted number)
+      const cleanResult = (result ?? "").replace(/"/g, ""); // Remove quotes
+      const parsedResult = parseInt(cleanResult, 10);
+      setFollowers(isNaN(parsedResult) ? undefined : parsedResult);
     } catch (error) {
       console.log("Error querying RUM contract:", error);
-      // Don't show alert for initial query, just log the error
+      // don't throw UI alert here
     }
   };
 
@@ -75,21 +91,115 @@ export default function ReclaimComponent() {
     }
   }, [client]);
 
+  // helper: ensure value is JSON string (for contract params)
+  const ensureJsonString = (val: any): string => {
+    if (typeof val === "string") return val;
+    try {
+      return JSON.stringify(val);
+    } catch (e) {
+      return String(val);
+    }
+  };
+
+  // helper: safely parse possibly-stringified JSON, return object or original
+  const parseMaybeStringified = (maybe: any) => {
+    if (maybe === undefined || maybe === null) return maybe;
+    if (typeof maybe !== "string") return maybe;
+    try {
+      return JSON.parse(maybe);
+    } catch (e) {
+      // sometimes Reclaim returns pretty-printed strings with newlines — still parse
+      try {
+        // remove newlines and attempt parse again
+        return JSON.parse(maybe.replace(/\n/g, ""));
+      } catch {
+        return maybe;
+      }
+    }
+  };
+
+  // helper to normalize orders/count extracted values
+  const normalizeExtracted = (extractedParameters: any) => {
+    if (!extractedParameters) return { count: undefined, orders: undefined };
+
+    // count: could be numeric string -> convert to number
+    let countVal: number | undefined = undefined;
+    if (extractedParameters.count !== undefined) {
+      const c = extractedParameters.count;
+      const n = Number(c);
+      countVal = Number.isNaN(n) ? undefined : n;
+    } else if (extractedParameters.order_count !== undefined) {
+      const n = Number(extractedParameters.order_count);
+      countVal = Number.isNaN(n) ? undefined : n;
+    } else if (extractedParameters.followers_count !== undefined) {
+      const n = Number(extractedParameters.followers_count);
+      countVal = Number.isNaN(n) ? undefined : n;
+    }
+
+    // orders: could be "[]" string, or stringified JSON array, or actual array/object
+    let ordersVal: any = undefined;
+    if (extractedParameters.orders !== undefined) {
+      const raw = extractedParameters.orders;
+
+      if (raw === "[]") {
+        ordersVal = [];
+      } else if (typeof raw === "string") {
+        try {
+          ordersVal = JSON.parse(raw);
+        } catch {
+          ordersVal = raw;
+        }
+      } else {
+        ordersVal = raw;
+      }
+    } else if (extractedParameters.order_list !== undefined) {
+      // alternate key
+      const raw = extractedParameters.order_list;
+      if (typeof raw === "string") {
+        try {
+          ordersVal = JSON.parse(raw);
+        } catch {
+          ordersVal = raw;
+        }
+      } else {
+        ordersVal = raw;
+      }
+    }
+
+    return { count: countVal, orders: ordersVal };
+  };
+
+  // Validate required fields are present (called before starting verification)
+  const validateRequiredFields = (): boolean => {
+    if (!requiredFields) return true; // parent didn't pass restrictions
+    const { productName, datePurchased, orderId, orderDetails } = requiredFields;
+    if (!productName || !datePurchased || !orderId || !orderDetails) {
+      Alert.alert("Missing details", "Please fill all product details before starting verification.");
+      return false;
+    }
+    return true;
+  };
+
   const startVerificationFlow = async () => {
+    // first validate wallet / account
     if (!account?.bech32Address) {
       Alert.alert("Error", "Please connect your wallet first");
       return;
     }
-
     if (!client) {
       Alert.alert("Error", "Client not found");
       return;
     }
 
-    // Clear previous state if retrying after error
-    if (status === "error") {
-      setQueryResult(undefined);
+    // ensure parent-provided fields are filled
+    if (!validateRequiredFields()) {
+      return;
     }
+
+    // Clear previous state so stale values don't show
+    setFollowers(undefined);
+    setCount(undefined);
+    setOrders(undefined);
 
     setLoading(true);
     setStatus("verifying");
@@ -105,53 +215,100 @@ export default function ReclaimComponent() {
       console.log("Verification result:", verificationResult);
       setStatus("verification_complete");
 
-      // Step 2: Execute RUM contract
+      // Step 2: Execute RUM contract (you already create executeMsg; keep existing contract logic)
       setStatus("executing");
+
+      const proof = verificationResult.proofs[0];
+
+      // Build claimInfo as stringified params/context (matching contract expectation)
       const claimInfo = {
-        provider: verificationResult.proofs[0].claimData.provider,
-        parameters: verificationResult.proofs[0].claimData.parameters,
-        context: verificationResult.proofs[0].claimData.context,
+        provider: proof.claimData.provider,
+        parameters: ensureJsonString(proof.claimData.parameters),
+        context: ensureJsonString(proof.claimData.context),
       };
 
       const signedClaim = {
         claim: {
-          identifier: verificationResult.proofs[0].claimData.identifier,
-          owner: verificationResult.proofs[0].claimData.owner,
-          epoch: verificationResult.proofs[0].claimData.epoch,
-          timestampS: verificationResult.proofs[0].claimData.timestampS,
+          identifier: proof.claimData.identifier,
+          owner: proof.claimData.owner,
+          epoch: proof.claimData.epoch,
+          timestampS: proof.claimData.timestampS,
         },
-        signatures: verificationResult.proofs[0].signatures,
+        signatures: proof.signatures,
       };
 
       const executeMsg = {
         update: {
           value: {
             proof: {
-              claimInfo: claimInfo,
-              signedClaim: signedClaim,
+              claimInfo,
+              signedClaim,
             },
           },
         },
       };
 
-      const executeResult = await client.execute(
-        account?.bech32Address,
-        RUM_CONTRACT_ADDRESS,
-        executeMsg,
-        "auto"
+      console.log(
+        "executeMsg (stringified params/context):",
+        JSON.stringify(executeMsg, null, 2)
       );
 
-      console.log("RUM contract executed:", executeResult);
+      // --- Extract orders/count from Reclaim proof context and set UI state ---
+      // proof.claimData.context might be stringified JSON or object; parse safely
+      const parsedContext = parseMaybeStringified(proof.claimData.context);
+      const extractedParams =
+        parsedContext && parsedContext.extractedParameters
+          ? parsedContext.extractedParameters
+          : // sometimes Reclaim returns the extracted parameters nested differently:
+            (parsedContext?.context && parsedContext.context.extractedParameters) ||
+            undefined;
+
+      const { count: extractedCount, orders: extractedOrders } =
+        normalizeExtracted(extractedParams);
+
+      console.log("Extracted count:", extractedCount);
+      console.log("Extracted orders:", extractedOrders);
+
+      setCount(extractedCount);
+      setOrders(extractedOrders);
 
       setStatus("complete");
 
-      // Step 3: Query the contract to show updated results
+      // Optional: query the RUM contract if you still want the on-chain followers value
       await queryRUMContract();
+      
+      // Deliver normalized result back to parent
+      if (typeof onVerificationResult === "function") {
+        // normalize orders to array if possible
+        let normalizedOrdersArr: any[] | string | undefined = undefined;
+        if (Array.isArray(extractedOrders)) {
+          normalizedOrdersArr = extractedOrders;
+        } else if (typeof extractedOrders === "string") {
+          // if it's a raw string attempt parse into array, otherwise give raw
+          try {
+            const parsed = JSON.parse(extractedOrders);
+            normalizedOrdersArr = Array.isArray(parsed) ? parsed : extractedOrders;
+          } catch {
+            normalizedOrdersArr = extractedOrders;
+          }
+        } else if (extractedOrders && typeof extractedOrders === "object") {
+          // maybe single order object or map
+          normalizedOrdersArr = Array.isArray(extractedOrders)
+            ? extractedOrders
+            : [extractedOrders];
+        } else {
+          normalizedOrdersArr = extractedOrders;
+        }
 
-      Alert.alert(
-        "Success",
-        "Complete verification flow finished successfully!"
-      );
+        onVerificationResult({
+          proof,
+          extractedCount,
+          extractedOrders: normalizedOrdersArr,
+          rawContext: parsedContext,
+        });
+      }
+
+      Alert.alert("Success", "Complete verification flow finished successfully!");
     } catch (error) {
       console.log("Error in verification flow:", error);
       setStatus("error");
@@ -174,11 +331,62 @@ export default function ReclaimComponent() {
       } else {
         Alert.alert(
           "Error",
-          error instanceof Error
-            ? error.message
-            : "An unknown error occurred during the verification flow"
+          error instanceof Error ? error.message : "An unknown error occurred during the verification flow"
         );
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // logout helpers (as before)
+  const performLogout = async (): Promise<void> => {
+    try {
+      if (typeof (accountApi as any).logout === "function") {
+        await (accountApi as any).logout();
+        // clear UI state when logged out
+        setFollowers(undefined);
+        setCount(undefined);
+        setOrders(undefined);
+        setStatus("idle");
+        return;
+      }
+      if (typeof (accountApi as any).disconnect === "function") {
+        await (accountApi as any).disconnect();
+        setFollowers(undefined);
+        setCount(undefined);
+        setOrders(undefined);
+        setStatus("idle");
+        return;
+      }
+      if (client && typeof (client as any).disconnect === "function") {
+        await (client as any).disconnect();
+        setFollowers(undefined);
+        setCount(undefined);
+        setOrders(undefined);
+        setStatus("idle");
+        return;
+      }
+      // fallback
+      setFollowers(undefined);
+      setCount(undefined);
+      setOrders(undefined);
+      setStatus("idle");
+      Alert.alert("Signed out", "Please switch accounts in your wallet app and press Sign In again.");
+    } catch (err) {
+      console.error("Error while trying to log out:", err);
+      throw err;
+    }
+  };
+
+  const logoutAndLogin = async () => {
+    setLoading(true);
+    try {
+      await performLogout();
+      await new Promise((r) => setTimeout(r, 500));
+      await login();
+    } catch (err: any) {
+      Alert.alert("Logout failed", err?.message ?? "Unknown error while logging out");
     } finally {
       setLoading(false);
     }
@@ -250,7 +458,7 @@ export default function ReclaimComponent() {
             ]}
             disabled={isConnecting}
           >
-            <Text style={styles.buttonText}>
+            <Text style={styles.menuButtonText}>
               {isConnecting ? "Connecting..." : "Connect Wallet"}
             </Text>
           </TouchableOpacity>
@@ -258,25 +466,82 @@ export default function ReclaimComponent() {
       ) : (
         <>
           <TouchableOpacity
-            style={[styles.button, isButtonDisabled() && styles.disabledButton]}
+            style={[styles.primaryButton, isButtonDisabled() && styles.disabledButton]}
             onPress={startVerificationFlow}
             disabled={isButtonDisabled()}
           >
-            <Text style={styles.buttonText}>{getButtonText()}</Text>
+            <Text style={styles.primaryButtonText}>{getButtonText()}</Text>
           </TouchableOpacity>
+
           <View style={styles.statusContainer}>
             <Text style={styles.statusTitle}>Status:</Text>
             <Text style={[styles.statusText, { color: getStatusColor() }]}>
               {getStatusText()}
             </Text>
           </View>
-          {queryResult !== undefined && (
-            <View style={styles.infoContainer}>
-              <Text style={styles.infoTitle}>Verified Orders:</Text>
-              <Text style={styles.infoText}>{queryResult}</Text>
-            </View>
-          )}
 
+          {/* --- show extracted orders & count (preferred) --- */}
+          <View style={styles.infoContainer}>
+            <Text style={styles.infoTitle}>Verified Count:</Text>
+            <Text style={styles.infoText}>
+              {count !== undefined ? String(count) : "—"}
+            </Text>
+
+            <Text style={[styles.infoTitle, { marginTop: 8 }]}>Verified Orders:</Text>
+            {orders === undefined ? (
+              <Text style={styles.infoText}>—</Text>
+            ) : typeof orders === "string" ? (
+              <Text style={styles.infoText}>{orders}</Text>
+            ) : Array.isArray(orders) ? (
+              orders.length === 0 ? (
+                <Text style={styles.infoText}>No orders found</Text>
+              ) : (
+                orders.map((o, idx) => (
+                  <View key={idx} style={{ marginBottom: 8 }}>
+                    <Text style={styles.infoText}>• Order ID: {o.orderId ?? o.id ?? "—"}</Text>
+                    <Text style={styles.infoText}>  Name: {o.name ?? o.product ?? "—"}</Text>
+                    <Text style={styles.infoText}>  Date: {o.date_purchased ?? o.date ?? "—"}</Text>
+                    <Text style={styles.infoText}>  Details: {o.details ?? o.orderDetails ?? "—"}</Text>
+                  </View>
+                ))
+              )
+            ) : (
+              <Text style={styles.infoText}>{JSON.stringify(orders)}</Text>
+            )}
+          </View>
+
+          {/* Sign out / switch buttons */}
+          <View style={styles.row}>
+            <TouchableOpacity
+              style={[styles.textButton]}
+              onPress={logoutAndLogin}
+              disabled={loading}
+            >
+              <Text style={styles.textButtonText}>
+                {loading ? "Processing..." : "Switch Account"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.textButton]}
+              onPress={async () => {
+                setLoading(true);
+                try {
+                  await performLogout();
+                  Alert.alert("Signed out", "You have been signed out.");
+                } catch (err: any) {
+                  Alert.alert("Error", err?.message ?? "Sign out failed");
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+            >
+              <Text style={styles.textButtonText}>
+                {loading ? "Processing..." : "Sign Out"}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </>
       )}
     </View>
@@ -285,11 +550,11 @@ export default function ReclaimComponent() {
 
 const styles = StyleSheet.create({
   container: {
-    gap: 15,
+    gap: 12,
   },
   connectButtonContainer: {
     width: "100%",
-    paddingHorizontal: 20,
+    paddingHorizontal: 0,
     alignItems: "center",
   },
   fullWidthButton: {
@@ -297,61 +562,84 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
   },
   menuButton: {
-    padding: 15,
-    borderRadius: 5,
+    padding: 12,
+    borderRadius: 8,
     backgroundColor: "#ffffff",
     alignItems: "center",
-    flex: 1,
     minWidth: 120,
-    maxWidth: "48%",
   },
-  buttonText: {
+  menuButtonText: {
     color: "#000000",
     fontSize: 16,
-    fontWeight: "500",
+    fontWeight: "600",
   },
   disabledButton: {
-    backgroundColor: "#333333",
     opacity: 0.6,
   },
-  button: {
-    backgroundColor: "#ffffff",
-    padding: 15,
-    borderRadius: 8,
+  primaryButton: {
+    backgroundColor: "#222222",
+    padding: 14,
+    borderRadius: 10,
     alignItems: "center",
+  },
+  primaryButtonText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "600",
   },
   statusContainer: {
     backgroundColor: "#111111",
-    padding: 15,
+    padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#333333",
   },
   statusTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "bold",
     color: "#ffffff",
-    marginBottom: 5,
+    marginBottom: 4,
   },
   statusText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "500",
+    color: "#cccccc",
   },
   infoContainer: {
     backgroundColor: "#111111",
-    padding: 15,
+    padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#333333",
   },
   infoTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "bold",
     color: "#ffffff",
-    marginBottom: 5,
+    marginBottom: 4,
   },
   infoText: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#cccccc",
+  },
+  row: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+  },
+  textButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    backgroundColor: "#fff",
+    minWidth: 140,
+    alignItems: "center",
+  },
+  textButtonText: {
+    color: "#000",
+    fontSize: 15,
+    fontWeight: "600",
   },
 });

@@ -5,15 +5,6 @@ export default function TabLayout() {
   return (
     <Tabs screenOptions={{ headerShown: false }}>
       <Tabs.Screen
-        name="articles"
-        options={{
-          title: "Articles",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="newspaper-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="index"
         options={{
           title: "Shop",
